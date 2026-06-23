@@ -1,0 +1,63 @@
+{
+  "Comment": "Talonflame approval-and-send workflow. Starts with a pinned request, waits for Asana approval through meowth's WaitForTaskToken pattern, then delegates Microsoft email delivery to chatot.",
+  "StartAt": "CreateAsanaApprovalAndWait",
+  "States": {
+    "CreateAsanaApprovalAndWait": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
+      "TimeoutSeconds": 604800,
+      "Parameters": {
+        "FunctionName.$": "$.runtime.meowthAsanaApprovalLambdaArn",
+        "Payload": {
+          "taskToken.$": "$$.Task.Token",
+          "request.$": "$.request",
+          "renderedEmail.$": "$.renderedEmail",
+          "approval.$": "$.approval",
+          "deliveryIdempotencyKey.$": "$.delivery.idempotencyKey"
+        }
+      },
+      "ResultPath": "$.approvalResult",
+      "Next": "SendViaMicrosoftProvider",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.Timeout"],
+          "ResultPath": "$.failure",
+          "Next": "TimedOut"
+        },
+        {
+          "ErrorEquals": ["NonApproverCompletion"],
+          "ResultPath": "$.failure",
+          "Next": "RejectedByNonApprover"
+        }
+      ]
+    },
+    "SendViaMicrosoftProvider": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::http:invoke",
+      "Parameters": {
+        "ApiEndpoint.$": "$.runtime.chatotManageCommunicationActivityUrl",
+        "Method": "POST",
+        "Authentication": {
+          "ConnectionArn.$": "$.runtime.chatotConnectionArn"
+        },
+        "Headers": {
+          "Content-Type": "application/json",
+          "Idempotency-Key.$": "$.delivery.idempotencyKey"
+        },
+        "RequestBody.$": "$.delivery"
+      },
+      "ResultPath": "$.deliveryResult",
+      "End": true
+    },
+    "RejectedByNonApprover": {
+      "Type": "Fail",
+      "Error": "NonApproverCompletion",
+      "Cause": "An Asana user other than the configured approver completed the approval task."
+    },
+    "TimedOut": {
+      "Type": "Fail",
+      "Error": "ApprovalTimedOut",
+      "Cause": "The Asana approval task was not completed before the wait state timed out."
+    }
+  }
+}
