@@ -59,10 +59,29 @@ See [`docs/talonflame/README.md`](docs/talonflame/README.md) for the full runtim
 ## Development Checks
 
 ```bash
-npm test
-npm run lint
-npm run build
+npm run ci
 ```
+
+`npm run ci` runs tests, lint, and the production build.
+
+## CI/CD
+
+GitHub Actions is configured in [`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml).
+
+The pipeline runs on pull requests, pushes to `main`, and manual dispatch:
+
+1. Install dependencies with `npm ci`.
+2. Run `npm test`.
+3. Run `npm run lint`.
+4. Run `npm run build`.
+5. Deploy a Vercel preview for same-repository pull requests when Vercel secrets are configured.
+6. Deploy to Vercel production after pushes to `main` when Vercel secrets are configured.
+
+Deployment is skipped safely if any of these GitHub secrets are missing:
+
+- `VERCEL_ORG_ID`
+- `VERCEL_PROJECT_ID`
+- `VERCEL_TOKEN`
 
 ## Deploy to Vercel
 
