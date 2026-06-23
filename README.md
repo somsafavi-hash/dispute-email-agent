@@ -32,9 +32,21 @@ AI-powered email generator for debt dispute processing. Upload a seller CSV, add
 
 Add `ANTHROPIC_API_KEY` as an environment variable in your Vercel project settings.
 
+## CI/CD
+
+GitHub Actions runs `npm ci`, `npm run lint`, and `npm run build` for pull requests and pushes to `main`.
+
+Production deployment runs after successful `main` builds when these repository secrets are configured:
+
+- `VERCEL_ORG_ID`
+- `VERCEL_PROJECT_ID`
+- `VERCEL_TOKEN`
+
+Keep `ANTHROPIC_API_KEY` configured in the linked Vercel project so production API routes can call Anthropic.
+
 ## Tech Stack
 
-- Next.js 15 (App Router)
+- Next.js 16 (App Router)
 - TypeScript
 - Tailwind CSS
 - Anthropic Claude API
