@@ -10,7 +10,7 @@ interface GeneratedEmail {
   subject: string;
   body: string;
   seller: string;
-  status: "generating" | "done" | "error";
+  status: "preparing" | "done" | "error";
 }
 
 export default function Home() {
@@ -19,7 +19,7 @@ export default function Home() {
   const [fileName, setFileName] = useState("");
   const [context, setContext] = useState("");
   const [emails, setEmails] = useState<GeneratedEmail[]>([]);
-  const [generating, setGenerating] = useState(false);
+  const [preparing, setPreparing] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [copied, setCopied] = useState<number | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -46,21 +46,11 @@ export default function Home() {
   }
 
   async function generateEmail(row: SellerRow, ctx: string, idx: number) {
-    const rowSummary = Object.entries(row).map(([k, v]) => `${k}: ${v}`).join("\n");
-    const systemPrompt = `You are a professional email writer for a debt dispute processing company. Generate a clear, professional email to a seller regarding their account documentation for a debt dispute review.
-
-Return ONLY a JSON object with exactly these two keys:
-{"subject": "...", "body": "..."}
-
-No preamble, no markdown, no extra text. Just the raw JSON object.`;
-
-    const userMsg = `Seller data:\n${rowSummary}${ctx ? "\n\nAdditional context:\n" + ctx : ""}\n\nGenerate a professional email referencing the seller's specific account details, asking them to confirm or provide outstanding documents for the dispute, and ending with clear next steps.`;
-
     try {
       const res = await fetch("/api/generate-email", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ systemPrompt, userMsg }),
+        body: JSON.stringify({ row, context: ctx }),
       });
       const data = await res.json();
       setEmails((prev) => {
@@ -79,17 +69,17 @@ No preamble, no markdown, no extra text. Just the raw JSON object.`;
 
   async function startGeneration() {
     if (!csvData.length) return;
-    setGenerating(true);
+    setPreparing(true);
     const sellerKey = headers.find((h) => /name/i.test(h)) || headers[0];
     const initial: GeneratedEmail[] = csvData.map((row) => ({
       subject: "",
       body: "",
       seller: row[sellerKey] || "Seller",
-      status: "generating",
+      status: "preparing",
     }));
     setEmails(initial);
     await Promise.all(csvData.map((row, i) => generateEmail(row, context, i)));
-    setGenerating(false);
+    setPreparing(false);
   }
 
   function copyEmail(idx: number) {
@@ -105,7 +95,7 @@ No preamble, no markdown, no extra text. Just the raw JSON object.`;
       <div className="max-w-2xl mx-auto">
         <div className="mb-8">
           <h1 className="text-2xl font-semibold text-gray-900">Dispute Email Agent</h1>
-          <p className="text-sm text-gray-500 mt-1">Upload a seller CSV and generate personalized dispute emails instantly.</p>
+          <p className="text-sm text-gray-500 mt-1">Upload a seller CSV and prepare the V1 document request email.</p>
         </div>
 
         {/* Step 1 */}
@@ -128,7 +118,7 @@ No preamble, no markdown, no extra text. Just the raw JSON object.`;
               <>
                 <div className="text-gray-300 text-3xl mb-2">↑</div>
                 <p className="font-medium text-gray-700">Drop CSV here or click to upload</p>
-                <p className="text-xs text-gray-400 mt-1">Any column names — agent figures it out</p>
+                <p className="text-xs text-gray-400 mt-1">Any column names — V1 uses one static email draft</p>
               </>
             )}
           </div>
@@ -144,11 +134,11 @@ No preamble, no markdown, no extra text. Just the raw JSON object.`;
 
         {/* Step 2 */}
         <div className="mb-6">
-          <p className="text-xs font-semibold text-gray-400 uppercase tracking-widest mb-2">Step 2 — Additional context (optional)</p>
+          <p className="text-xs font-semibold text-gray-400 uppercase tracking-widest mb-2">Step 2 — Additional context (saved for future versions)</p>
           <textarea
             className="w-full border border-gray-200 rounded-xl p-3 text-sm text-gray-800 bg-white resize-none focus:outline-none focus:ring-2 focus:ring-blue-200"
             rows={3}
-            placeholder="E.g. — This is from Spring Oaks Capital. The recipient is Genesis. Emails should reference outstanding debt documents and request a call-back if documents are missing."
+            placeholder="V1 does not use this field to generate email text."
             value={context}
             onChange={(e) => setContext(e.target.value)}
           />
@@ -157,17 +147,17 @@ No preamble, no markdown, no extra text. Just the raw JSON object.`;
         {/* Generate */}
         <button
           onClick={startGeneration}
-          disabled={!csvData.length || generating}
+          disabled={!csvData.length || preparing}
           className="w-full bg-gray-900 text-white font-medium py-3 rounded-xl text-sm disabled:opacity-40 disabled:cursor-not-allowed hover:bg-gray-700 transition-colors mb-8"
         >
-          {generating ? "Generating..." : emails.length ? "↺ Regenerate all" : "Generate emails"}
+          {preparing ? "Preparing..." : emails.length ? "↺ Prepare again" : "Prepare emails"}
         </button>
 
         {/* Results */}
         {emails.length === 0 && (
           <div className="text-center text-gray-300 py-12">
             <div className="text-4xl mb-3">✉</div>
-            <p className="text-sm">Emails will appear here after generation</p>
+            <p className="text-sm">Emails will appear here after preparation</p>
           </div>
         )}
         {emails.map((email, idx) => (
@@ -175,10 +165,10 @@ No preamble, no markdown, no extra text. Just the raw JSON object.`;
             <div className="flex justify-between items-start mb-3">
               <div>
                 <p className="font-medium text-gray-900">{email.seller}</p>
-                <p className="text-xs text-gray-400 mt-0.5">{email.subject || "Generating subject..."}</p>
+                <p className="text-xs text-gray-400 mt-0.5">{email.subject || "Preparing subject..."}</p>
               </div>
               <span className={`text-xs px-3 py-1 rounded-full font-medium ${email.status === "done" ? "bg-green-50 text-green-600" : email.status === "error" ? "bg-red-50 text-red-500" : "bg-amber-50 text-amber-500"}`}>
-                {email.status === "done" ? "✓ Ready" : email.status === "error" ? "Error" : "Generating..."}
+                {email.status === "done" ? "✓ Ready" : email.status === "error" ? "Error" : "Preparing..."}
               </span>
             </div>
             <div className="bg-gray-50 rounded-lg p-4 text-sm text-gray-700 whitespace-pre-wrap leading-relaxed">

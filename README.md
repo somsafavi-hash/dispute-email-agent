@@ -1,6 +1,6 @@
 # Dispute Email Agent
 
-AI-powered email generator for debt dispute processing. Upload a seller CSV, add optional context, and generate personalized draft emails for each seller row instantly.
+V1 debt dispute email draft tool. Upload a seller CSV and prepare a fixed document-request email for each seller row.
 
 This repo also includes **Talonflame**, an approval-gated email send orchestrator. Talonflame renders a plain-text email, opens an Asana approval task, waits for the configured approver to complete it, and only then delegates delivery to the Microsoft email provider through the communication runtime.
 
@@ -11,23 +11,19 @@ This repo also includes **Talonflame**, an approval-gated email send orchestrato
    ```bash
    npm install
    ```
-3. Add your Anthropic API key to `.env.local`:
-   ```
-   ANTHROPIC_API_KEY=your_key_here
-   ```
-4. Run the dev server:
+3. Run the dev server:
    ```bash
    npm run dev
    ```
-5. Open [http://localhost:3000](http://localhost:3000)
+4. Open [http://localhost:3000](http://localhost:3000)
 
 ## CSV Draft Email Generator
 
 ### How It Works
 
 - Upload any CSV with seller data (column names are auto-detected)
-- Optionally add context (sender info, recipient, dispute instructions)
-- Agent generates a personalized email per row using Claude
+- Optionally add context for future versions
+- V1 returns the same hard-coded subject and body for each row
 - Copy each draft individually
 
 ## Talonflame Approval-Gated Sending
@@ -87,14 +83,13 @@ Deployment is skipped safely if any of these GitHub secrets are missing:
 
 [![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/somsafavi-hash/dispute-email-agent)
 
-Add `ANTHROPIC_API_KEY` as an environment variable in your Vercel project settings for the draft generator. Add the Talonflame variables above when deploying approval-gated sending.
+Add the Talonflame variables above when deploying approval-gated sending.
 
 ## Tech Stack
 
 - Next.js 16 (App Router)
 - TypeScript
 - Tailwind CSS
-- Anthropic Claude API
 - AWS Step Functions
 - Asana API
 - Microsoft Graph email delivery via the communication provider
