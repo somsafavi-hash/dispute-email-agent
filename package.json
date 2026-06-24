@@ -8,7 +8,9 @@
     "start": "next start",
     "lint": "eslint",
     "test": "vitest run",
-    "ci": "npm test && npm run lint && npm run build"
+    "ci": "npm test && npm run lint && npm run build",
+    "docker:build": "docker build -t dispute-email-agent .",
+    "docker:run": "docker run --rm -p 3000:3000 --env-file .env.local dispute-email-agent"
   },
   "engines": {
     "node": ">=20.9.0"

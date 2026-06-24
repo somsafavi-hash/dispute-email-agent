@@ -10,6 +10,8 @@ Talonflame is the composition layer for approval-gated Microsoft email sends. It
 6. Let meowth's `WaitForTaskToken` + Asana task pattern wait for approval.
 7. After the configured approver completes the task, hand the rendered email to chatot's Microsoft provider activity.
 
+In AWS deployments, the Next.js control plane runs on ECS/Fargate behind an HTTPS ALB, and the Talonflame Step Functions state machine is deployed from `infra/aws/app.yml`. The standalone ASL copy in `state-machine.asl.json` mirrors the deployed workflow for review.
+
 ## Runtime configuration
 
 Required:
@@ -54,7 +56,7 @@ Each identity may also be `{ "asanaGid": "123", "email": "name@example.com", "na
 
 `POST /api/talonflame/asana-webhook`
 
-Handles the Asana webhook handshake and completion events. Non-approver completions fail the Step Functions task token with `NonApproverCompletion`; duplicate or expired task-token callbacks are treated as replays.
+Handles the Asana webhook handshake and completion events. In production, configure Asana to call the AWS load-balanced URL for this route. Non-approver completions fail the Step Functions task token with `NonApproverCompletion`; duplicate or expired task-token callbacks are treated as replays.
 
 ## Verification plan
 

@@ -10,6 +10,7 @@ on:
 permissions:
   contents: read
   pull-requests: read
+  id-token: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -17,6 +18,10 @@ concurrency:
 
 env:
   NODE_VERSION: "20"
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+  ECR_REPOSITORY: ${{ vars.AWS_ECR_REPOSITORY || 'dispute-email-agent' }}
+  ECR_STACK_NAME: ${{ vars.AWS_ECR_STACK_NAME || 'dispute-email-agent-ecr' }}
+  APP_STACK_NAME: ${{ vars.AWS_APP_STACK_NAME || 'dispute-email-agent-production' }}
 
 jobs:
   ci:
@@ -45,104 +50,108 @@ jobs:
       - name: Build application
         run: npm run build
 
-  deploy-preview:
-    name: Deploy preview
-    needs: ci
-    runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
-    env:
-      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
-      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-
-    steps:
-      - name: Check Vercel secrets
-        id: vercel-secrets
-        run: |
-          if [ -n "$VERCEL_ORG_ID" ] && [ -n "$VERCEL_PROJECT_ID" ] && [ -n "$VERCEL_TOKEN" ]; then
-            echo "configured=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "configured=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Check out repository
-        if: steps.vercel-secrets.outputs.configured == 'true'
-        uses: actions/checkout@v4
-
-      - name: Set up Node.js
-        if: steps.vercel-secrets.outputs.configured == 'true'
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
-
-      - name: Install dependencies
-        if: steps.vercel-secrets.outputs.configured == 'true'
-        run: npm ci
-
-      - name: Pull Vercel preview environment
-        if: steps.vercel-secrets.outputs.configured == 'true'
-        run: npx --yes vercel@latest pull --yes --environment=preview --token="$VERCEL_TOKEN"
-
-      - name: Build Vercel preview artifact
-        if: steps.vercel-secrets.outputs.configured == 'true'
-        run: npx --yes vercel@latest build --token="$VERCEL_TOKEN"
-
-      - name: Deploy Vercel preview
-        if: steps.vercel-secrets.outputs.configured == 'true'
-        run: npx --yes vercel@latest deploy --prebuilt --token="$VERCEL_TOKEN"
-
-      - name: Skip preview deploy
-        if: steps.vercel-secrets.outputs.configured != 'true'
-        run: echo "Skipping preview deploy because Vercel secrets are not configured."
-
   deploy-production:
-    name: Deploy production
+    name: Deploy production to AWS
     needs: ci
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    environment: production
     env:
-      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
-      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+      AWS_VPC_ID: ${{ vars.AWS_VPC_ID }}
+      AWS_PUBLIC_SUBNET_IDS: ${{ vars.AWS_PUBLIC_SUBNET_IDS }}
+      AWS_APP_SUBNET_IDS: ${{ vars.AWS_APP_SUBNET_IDS }}
+      AWS_CERTIFICATE_ARN: ${{ vars.AWS_CERTIFICATE_ARN }}
+      TALONFLAME_ASANA_ACCESS_TOKEN_SECRET_ARN: ${{ secrets.TALONFLAME_ASANA_ACCESS_TOKEN_SECRET_ARN }}
+      TALONFLAME_ASANA_PROJECT_GID: ${{ vars.TALONFLAME_ASANA_PROJECT_GID }}
+      TALONFLAME_ASANA_WORKSPACE_GID: ${{ vars.TALONFLAME_ASANA_WORKSPACE_GID }}
+      MEOWTH_ASANA_APPROVAL_LAMBDA_ARN: ${{ vars.MEOWTH_ASANA_APPROVAL_LAMBDA_ARN }}
+      MEOWTH_APPROVAL_TOKEN_LOOKUP_URL: ${{ vars.MEOWTH_APPROVAL_TOKEN_LOOKUP_URL }}
+      MEOWTH_APPROVAL_TOKEN_LOOKUP_BEARER_TOKEN_SECRET_ARN: ${{ secrets.MEOWTH_APPROVAL_TOKEN_LOOKUP_BEARER_TOKEN_SECRET_ARN }}
+      CHATOT_MANAGE_COMMUNICATION_ACTIVITY_URL: ${{ vars.CHATOT_MANAGE_COMMUNICATION_ACTIVITY_URL }}
+      CHATOT_STEP_FUNCTIONS_CONNECTION_ARN: ${{ vars.CHATOT_STEP_FUNCTIONS_CONNECTION_ARN }}
+      ORANGURU_ASSEMBLE_COMMUNICATION_RUNTIME_URL: ${{ vars.ORANGURU_ASSEMBLE_COMMUNICATION_RUNTIME_URL }}
+      ORANGURU_BEARER_TOKEN_SECRET_ARN: ${{ secrets.ORANGURU_BEARER_TOKEN_SECRET_ARN }}
 
     steps:
-      - name: Check Vercel secrets
-        id: vercel-secrets
+      - name: Check required AWS configuration
         run: |
-          if [ -n "$VERCEL_ORG_ID" ] && [ -n "$VERCEL_PROJECT_ID" ] && [ -n "$VERCEL_TOKEN" ]; then
-            echo "configured=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "configured=false" >> "$GITHUB_OUTPUT"
-          fi
+          missing=0
+          for name in \
+            AWS_ROLE_ARN \
+            AWS_VPC_ID \
+            AWS_PUBLIC_SUBNET_IDS \
+            AWS_APP_SUBNET_IDS \
+            AWS_CERTIFICATE_ARN \
+            TALONFLAME_ASANA_ACCESS_TOKEN_SECRET_ARN \
+            TALONFLAME_ASANA_PROJECT_GID \
+            MEOWTH_ASANA_APPROVAL_LAMBDA_ARN \
+            MEOWTH_APPROVAL_TOKEN_LOOKUP_URL \
+            CHATOT_MANAGE_COMMUNICATION_ACTIVITY_URL \
+            CHATOT_STEP_FUNCTIONS_CONNECTION_ARN
+          do
+            if [ -z "${!name}" ]; then
+              echo "::error::$name is required for AWS production deploy"
+              missing=1
+            fi
+          done
+          exit "$missing"
 
       - name: Check out repository
-        if: steps.vercel-secrets.outputs.configured == 'true'
         uses: actions/checkout@v4
 
-      - name: Set up Node.js
-        if: steps.vercel-secrets.outputs.configured == 'true'
-        uses: actions/setup-node@v4
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
         with:
-          node-version: ${{ env.NODE_VERSION }}
-          cache: npm
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
 
-      - name: Install dependencies
-        if: steps.vercel-secrets.outputs.configured == 'true'
-        run: npm ci
+      - name: Deploy ECR repository stack
+        run: |
+          aws cloudformation deploy \
+            --stack-name "$ECR_STACK_NAME" \
+            --template-file infra/aws/ecr.yml \
+            --parameter-overrides RepositoryName="$ECR_REPOSITORY"
 
-      - name: Pull Vercel production environment
-        if: steps.vercel-secrets.outputs.configured == 'true'
-        run: npx --yes vercel@latest pull --yes --environment=production --token="$VERCEL_TOKEN"
+      - name: Resolve ECR repository URI
+        id: ecr
+        run: |
+          repository_uri="$(aws cloudformation describe-stacks \
+            --stack-name "$ECR_STACK_NAME" \
+            --query "Stacks[0].Outputs[?OutputKey=='RepositoryUri'].OutputValue" \
+            --output text)"
+          echo "repository-uri=$repository_uri" >> "$GITHUB_OUTPUT"
+          echo "image-uri=$repository_uri:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
 
-      - name: Build Vercel production artifact
-        if: steps.vercel-secrets.outputs.configured == 'true'
-        run: npx --yes vercel@latest build --prod --token="$VERCEL_TOKEN"
+      - name: Log in to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Deploy Vercel production
-        if: steps.vercel-secrets.outputs.configured == 'true'
-        run: npx --yes vercel@latest deploy --prebuilt --prod --token="$VERCEL_TOKEN"
+      - name: Build and push container image
+        run: |
+          docker build --pull --tag "${{ steps.ecr.outputs.image-uri }}" .
+          docker push "${{ steps.ecr.outputs.image-uri }}"
 
-      - name: Skip production deploy
-        if: steps.vercel-secrets.outputs.configured != 'true'
-        run: echo "Skipping production deploy because Vercel secrets are not configured."
+      - name: Deploy application stack
+        run: |
+          aws cloudformation deploy \
+            --stack-name "$APP_STACK_NAME" \
+            --template-file infra/aws/app.yml \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --parameter-overrides \
+              AppName=dispute-email-agent \
+              EnvironmentName=production \
+              ImageUri="${{ steps.ecr.outputs.image-uri }}" \
+              VpcId="$AWS_VPC_ID" \
+              PublicSubnetIds="$AWS_PUBLIC_SUBNET_IDS" \
+              AppSubnetIds="$AWS_APP_SUBNET_IDS" \
+              CertificateArn="$AWS_CERTIFICATE_ARN" \
+              AsanaAccessTokenSecretArn="$TALONFLAME_ASANA_ACCESS_TOKEN_SECRET_ARN" \
+              AsanaProjectGid="$TALONFLAME_ASANA_PROJECT_GID" \
+              AsanaWorkspaceGid="$TALONFLAME_ASANA_WORKSPACE_GID" \
+              MeowthAsanaApprovalLambdaArn="$MEOWTH_ASANA_APPROVAL_LAMBDA_ARN" \
+              MeowthApprovalTokenLookupUrl="$MEOWTH_APPROVAL_TOKEN_LOOKUP_URL" \
+              MeowthApprovalTokenLookupBearerTokenSecretArn="$MEOWTH_APPROVAL_TOKEN_LOOKUP_BEARER_TOKEN_SECRET_ARN" \
+              ChatotManageCommunicationActivityUrl="$CHATOT_MANAGE_COMMUNICATION_ACTIVITY_URL" \
+              ChatotConnectionArn="$CHATOT_STEP_FUNCTIONS_CONNECTION_ARN" \
+              OranguruAssembleCommunicationRuntimeUrl="$ORANGURU_ASSEMBLE_COMMUNICATION_RUNTIME_URL" \
+              OranguruBearerTokenSecretArn="$ORANGURU_BEARER_TOKEN_SECRET_ARN"

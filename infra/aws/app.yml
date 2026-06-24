@@ -1,0 +1,513 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: AWS ECS/Fargate deployment for dispute-email-agent and Talonflame Step Functions.
+
+Parameters:
+  AppName:
+    Type: String
+    Default: dispute-email-agent
+  EnvironmentName:
+    Type: String
+    Default: production
+  ImageUri:
+    Type: String
+    Description: Fully qualified container image URI to deploy.
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  PublicSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Public subnets for the internet-facing load balancer.
+  AppSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Application subnets for ECS tasks. Private subnets with NAT are recommended.
+  AssignPublicIp:
+    Type: String
+    Default: DISABLED
+    AllowedValues:
+      - ENABLED
+      - DISABLED
+  CertificateArn:
+    Type: String
+    Description: ACM certificate ARN for HTTPS. HTTP is redirected to HTTPS.
+  DesiredCount:
+    Type: Number
+    Default: 1
+    MinValue: 1
+  ContainerCpu:
+    Type: Number
+    Default: 512
+  ContainerMemory:
+    Type: Number
+    Default: 1024
+  ContainerPort:
+    Type: Number
+    Default: 3000
+  HealthCheckPath:
+    Type: String
+    Default: /api/health
+  AsanaAccessTokenSecretArn:
+    Type: String
+    Description: Secrets Manager or SSM parameter ARN containing TALONFLAME_ASANA_ACCESS_TOKEN.
+  AsanaProjectGid:
+    Type: String
+    Description: Asana approval project gid.
+  AsanaWorkspaceGid:
+    Type: String
+    Default: ""
+  StateMachineName:
+    Type: String
+    Default: talonflame-email-approval-send
+  MeowthAsanaApprovalLambdaArn:
+    Type: String
+    Description: Lambda ARN used by the Step Functions waitForTaskToken approval state.
+  MeowthApprovalTokenLookupUrl:
+    Type: String
+    Description: HTTPS endpoint used by webhook route to resolve Asana task gids to task tokens.
+  MeowthApprovalTokenLookupBearerTokenSecretArn:
+    Type: String
+    Default: ""
+  ChatotManageCommunicationActivityUrl:
+    Type: String
+    Description: chatot manage-communication-activity endpoint used by the Microsoft send state.
+  ChatotConnectionArn:
+    Type: String
+    Description: EventBridge Connection ARN used by Step Functions HTTP invoke for chatot.
+  OranguruAssembleCommunicationRuntimeUrl:
+    Type: String
+    Default: ""
+  OranguruBearerTokenSecretArn:
+    Type: String
+    Default: ""
+
+Conditions:
+  HasAsanaWorkspaceGid: !Not [!Equals [!Ref AsanaWorkspaceGid, ""]]
+  HasMeowthApprovalTokenLookupBearerTokenSecretArn: !Not
+    - !Equals [!Ref MeowthApprovalTokenLookupBearerTokenSecretArn, ""]
+  HasOranguruAssembleCommunicationRuntimeUrl: !Not
+    - !Equals [!Ref OranguruAssembleCommunicationRuntimeUrl, ""]
+  HasOranguruBearerTokenSecretArn: !Not [!Equals [!Ref OranguruBearerTokenSecretArn, ""]]
+
+Resources:
+  LoadBalancerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub ${AppName}-${EnvironmentName} ALB ingress
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Application
+          Value: !Ref AppName
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  AppSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub ${AppName}-${EnvironmentName} ECS ingress
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: !Ref ContainerPort
+          ToPort: !Ref ContainerPort
+          SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Application
+          Value: !Ref AppName
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Scheme: internet-facing
+      Type: application
+      Subnets: !Ref PublicSubnetIds
+      SecurityGroups:
+        - !Ref LoadBalancerSecurityGroup
+      Tags:
+        - Key: Application
+          Value: !Ref AppName
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      TargetType: ip
+      VpcId: !Ref VpcId
+      Port: !Ref ContainerPort
+      Protocol: HTTP
+      HealthCheckEnabled: true
+      HealthCheckPath: !Ref HealthCheckPath
+      Matcher:
+        HttpCode: "200"
+      Tags:
+        - Key: Application
+          Value: !Ref AppName
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  HttpListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: redirect
+          RedirectConfig:
+            Protocol: HTTPS
+            Port: "443"
+            StatusCode: HTTP_301
+
+  HttpsListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 443
+      Protocol: HTTPS
+      Certificates:
+        - CertificateArn: !Ref CertificateArn
+      SslPolicy: ELBSecurityPolicy-TLS13-1-2-2021-06
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub ${AppName}-${EnvironmentName}
+      ClusterSettings:
+        - Name: containerInsights
+          Value: enabled
+      Tags:
+        - Key: Application
+          Value: !Ref AppName
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  AppLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /ecs/${AppName}/${EnvironmentName}
+      RetentionInDays: 30
+
+  StateMachineLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/vendedlogs/states/${AppName}-${EnvironmentName}
+      RetentionInDays: 30
+
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${AppName}-${EnvironmentName}-execution
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: ReadRuntimeSecrets
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                  - ssm:GetParameters
+                  - ssm:GetParameter
+                Resource:
+                  - !Ref AsanaAccessTokenSecretArn
+                  - !If
+                    - HasMeowthApprovalTokenLookupBearerTokenSecretArn
+                    - !Ref MeowthApprovalTokenLookupBearerTokenSecretArn
+                    - !Ref AWS::NoValue
+                  - !If
+                    - HasOranguruBearerTokenSecretArn
+                    - !Ref OranguruBearerTokenSecretArn
+                    - !Ref AWS::NoValue
+
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${AppName}-${EnvironmentName}-task
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: TalonflameStepFunctionsAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - states:StartExecution
+                Resource: !Ref TalonflameStateMachine
+              - Effect: Allow
+                Action:
+                  - states:SendTaskSuccess
+                  - states:SendTaskFailure
+                Resource: "*"
+
+  StateMachineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${AppName}-${EnvironmentName}-sfn
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: states.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: TalonflameStateMachineAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource: !Ref MeowthAsanaApprovalLambdaArn
+              - Effect: Allow
+                Action:
+                  - states:InvokeHTTPEndpoint
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - events:RetrieveConnectionCredentials
+                Resource: !Ref ChatotConnectionArn
+              - Effect: Allow
+                Action:
+                  - secretsmanager:DescribeSecret
+                  - secretsmanager:GetSecretValue
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogDelivery
+                  - logs:GetLogDelivery
+                  - logs:UpdateLogDelivery
+                  - logs:DeleteLogDelivery
+                  - logs:ListLogDeliveries
+                  - logs:PutResourcePolicy
+                  - logs:DescribeResourcePolicies
+                  - logs:DescribeLogGroups
+                Resource: "*"
+
+  TalonflameStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: !Sub ${StateMachineName}-${EnvironmentName}
+      StateMachineType: STANDARD
+      RoleArn: !GetAtt StateMachineRole.Arn
+      LoggingConfiguration:
+        Destinations:
+          - CloudWatchLogsLogGroup:
+              LogGroupArn: !Sub ${StateMachineLogGroup.Arn}:*
+        IncludeExecutionData: false
+        Level: ALL
+      TracingConfiguration:
+        Enabled: true
+      DefinitionString: |
+        {
+          "Comment": "Talonflame approval-and-send workflow. Starts with a pinned request, waits for Asana approval through meowth's WaitForTaskToken pattern, then delegates Microsoft email delivery to chatot.",
+          "StartAt": "CreateAsanaApprovalAndWait",
+          "States": {
+            "CreateAsanaApprovalAndWait": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::lambda:invoke.waitForTaskToken",
+              "TimeoutSeconds": 604800,
+              "Parameters": {
+                "FunctionName.$": "$.runtime.meowthAsanaApprovalLambdaArn",
+                "Payload": {
+                  "taskToken.$": "$$.Task.Token",
+                  "request.$": "$.request",
+                  "renderedEmail.$": "$.renderedEmail",
+                  "approval.$": "$.approval",
+                  "deliveryIdempotencyKey.$": "$.delivery.idempotencyKey"
+                }
+              },
+              "ResultPath": "$.approvalResult",
+              "Next": "SendViaMicrosoftProvider",
+              "Catch": [
+                {
+                  "ErrorEquals": ["States.Timeout"],
+                  "ResultPath": "$.failure",
+                  "Next": "TimedOut"
+                },
+                {
+                  "ErrorEquals": ["NonApproverCompletion"],
+                  "ResultPath": "$.failure",
+                  "Next": "RejectedByNonApprover"
+                }
+              ]
+            },
+            "SendViaMicrosoftProvider": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::http:invoke",
+              "Parameters": {
+                "ApiEndpoint.$": "$.runtime.chatotManageCommunicationActivityUrl",
+                "Method": "POST",
+                "Authentication": {
+                  "ConnectionArn.$": "$.runtime.chatotConnectionArn"
+                },
+                "Headers": {
+                  "Content-Type": "application/json",
+                  "Idempotency-Key.$": "$.delivery.idempotencyKey"
+                },
+                "RequestBody.$": "$.delivery"
+              },
+              "ResultPath": "$.deliveryResult",
+              "End": true
+            },
+            "RejectedByNonApprover": {
+              "Type": "Fail",
+              "Error": "NonApproverCompletion",
+              "Cause": "An Asana user other than the configured approver completed the approval task."
+            },
+            "TimedOut": {
+              "Type": "Fail",
+              "Error": "ApprovalTimedOut",
+              "Cause": "The Asana approval task was not completed before the wait state timed out."
+            }
+          }
+        }
+      Tags:
+        - Key: Application
+          Value: !Ref AppName
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub ${AppName}-${EnvironmentName}
+      Cpu: !Ref ContainerCpu
+      Memory: !Ref ContainerMemory
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ContainerDefinitions:
+        - Name: app
+          Image: !Ref ImageUri
+          Essential: true
+          PortMappings:
+            - ContainerPort: !Ref ContainerPort
+              Protocol: tcp
+          Environment:
+            - Name: PORT
+              Value: !Sub ${ContainerPort}
+            - Name: HOSTNAME
+              Value: 0.0.0.0
+            - Name: NODE_ENV
+              Value: production
+            - Name: TALONFLAME_ASANA_PROJECT_GID
+              Value: !Ref AsanaProjectGid
+            - Name: TALONFLAME_STATE_MACHINE_ARN
+              Value: !Ref TalonflameStateMachine
+            - !If
+              - HasAsanaWorkspaceGid
+              - Name: TALONFLAME_ASANA_WORKSPACE_GID
+                Value: !Ref AsanaWorkspaceGid
+              - !Ref AWS::NoValue
+            - Name: MEOWTH_ASANA_APPROVAL_LAMBDA_ARN
+              Value: !Ref MeowthAsanaApprovalLambdaArn
+            - Name: MEOWTH_APPROVAL_TOKEN_LOOKUP_URL
+              Value: !Ref MeowthApprovalTokenLookupUrl
+            - Name: CHATOT_MANAGE_COMMUNICATION_ACTIVITY_URL
+              Value: !Ref ChatotManageCommunicationActivityUrl
+            - Name: CHATOT_STEP_FUNCTIONS_CONNECTION_ARN
+              Value: !Ref ChatotConnectionArn
+            - !If
+              - HasOranguruAssembleCommunicationRuntimeUrl
+              - Name: ORANGURU_ASSEMBLE_COMMUNICATION_RUNTIME_URL
+                Value: !Ref OranguruAssembleCommunicationRuntimeUrl
+              - !Ref AWS::NoValue
+          Secrets:
+            - Name: TALONFLAME_ASANA_ACCESS_TOKEN
+              ValueFrom: !Ref AsanaAccessTokenSecretArn
+            - !If
+              - HasMeowthApprovalTokenLookupBearerTokenSecretArn
+              - Name: MEOWTH_APPROVAL_TOKEN_LOOKUP_BEARER_TOKEN
+                ValueFrom: !Ref MeowthApprovalTokenLookupBearerTokenSecretArn
+              - !Ref AWS::NoValue
+            - !If
+              - HasOranguruBearerTokenSecretArn
+              - Name: ORANGURU_BEARER_TOKEN
+                ValueFrom: !Ref OranguruBearerTokenSecretArn
+              - !Ref AWS::NoValue
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref AppLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: app
+
+  Service:
+    Type: AWS::ECS::Service
+    DependsOn:
+      - HttpsListener
+    Properties:
+      ServiceName: !Sub ${AppName}-${EnvironmentName}
+      Cluster: !Ref Cluster
+      DesiredCount: !Ref DesiredCount
+      LaunchType: FARGATE
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 100
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: !Ref AssignPublicIp
+          Subnets: !Ref AppSubnetIds
+          SecurityGroups:
+            - !Ref AppSecurityGroup
+      LoadBalancers:
+        - ContainerName: app
+          ContainerPort: !Ref ContainerPort
+          TargetGroupArn: !Ref TargetGroup
+      Tags:
+        - Key: Application
+          Value: !Ref AppName
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+Outputs:
+  LoadBalancerDnsName:
+    Description: ALB DNS name for the deployed application.
+    Value: !GetAtt LoadBalancer.DNSName
+  ApplicationUrl:
+    Description: Public application URL.
+    Value: !Sub https://${LoadBalancer.DNSName}
+  ClusterName:
+    Description: ECS cluster name.
+    Value: !Ref Cluster
+  ServiceName:
+    Description: ECS service name.
+    Value: !GetAtt Service.Name
+  StateMachineArn:
+    Description: Talonflame Step Functions state machine ARN.
+    Value: !Ref TalonflameStateMachine
