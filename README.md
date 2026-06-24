@@ -60,6 +60,17 @@ npm run ci
 
 `npm run ci` runs tests, lint, and the production build.
 
+## Container Runtime
+
+The app is built as a standalone Next.js container for AWS:
+
+```bash
+npm run docker:build
+npm run docker:run
+```
+
+`GET /api/health` is used by the AWS load balancer health check.
+
 ## CI/CD
 
 GitHub Actions is configured in [`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml).
@@ -70,26 +81,67 @@ The pipeline runs on pull requests, pushes to `main`, and manual dispatch:
 2. Run `npm test`.
 3. Run `npm run lint`.
 4. Run `npm run build`.
-5. Deploy a Vercel preview for same-repository pull requests when Vercel secrets are configured.
-6. Deploy to Vercel production after pushes to `main` when Vercel secrets are configured.
+5. On pushes to `main`, authenticate to AWS with GitHub OIDC.
+6. Build and push the container image to ECR.
+7. Deploy the ECS/Fargate, ALB, IAM, and Step Functions stack with CloudFormation.
 
-Deployment is skipped safely if any of these GitHub secrets are missing:
+Required GitHub secrets:
 
-- `VERCEL_ORG_ID`
-- `VERCEL_PROJECT_ID`
-- `VERCEL_TOKEN`
+- `AWS_ROLE_ARN`
+- `TALONFLAME_ASANA_ACCESS_TOKEN_SECRET_ARN`
 
-## Deploy to Vercel
+Optional GitHub secrets:
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/somsafavi-hash/dispute-email-agent)
+- `MEOWTH_APPROVAL_TOKEN_LOOKUP_BEARER_TOKEN_SECRET_ARN`
+- `ORANGURU_BEARER_TOKEN_SECRET_ARN`
 
-Add the Talonflame variables above when deploying approval-gated sending.
+Required GitHub variables:
+
+- `AWS_REGION`
+- `AWS_VPC_ID`
+- `AWS_PUBLIC_SUBNET_IDS`
+- `AWS_APP_SUBNET_IDS`
+- `AWS_CERTIFICATE_ARN`
+- `TALONFLAME_ASANA_PROJECT_GID`
+- `MEOWTH_ASANA_APPROVAL_LAMBDA_ARN`
+- `MEOWTH_APPROVAL_TOKEN_LOOKUP_URL`
+- `CHATOT_MANAGE_COMMUNICATION_ACTIVITY_URL`
+- `CHATOT_STEP_FUNCTIONS_CONNECTION_ARN`
+
+Optional GitHub variables:
+
+- `AWS_ECR_REPOSITORY`
+- `AWS_ECR_STACK_NAME`
+- `AWS_APP_STACK_NAME`
+- `TALONFLAME_ASANA_WORKSPACE_GID`
+- `ORANGURU_ASSEMBLE_COMMUNICATION_RUNTIME_URL`
+
+## Deploy to AWS
+
+AWS infrastructure lives in [`infra/aws`](infra/aws):
+
+- `ecr.yml` creates the immutable ECR repository with image scanning and retention.
+- `app.yml` deploys ECS/Fargate behind an HTTPS ALB, CloudWatch logs, IAM roles, and the Talonflame Step Functions state machine.
+
+Runtime secrets should be stored in AWS Secrets Manager or SSM Parameter Store and referenced by ARN. Do not commit secret values. See [`.env.example`](.env.example) for local variable names.
+
+The Asana webhook URL should point at the AWS load-balanced route:
+
+```text
+https://<aws-domain>/api/talonflame/asana-webhook
+```
+
+See [`docs/aws/deployment.md`](docs/aws/deployment.md) for the deployment model and SOCAPITAL-style engineering guardrails.
 
 ## Tech Stack
 
 - Next.js 16 (App Router)
 - TypeScript
 - Tailwind CSS
+- Docker
+- Amazon ECS/Fargate
+- Amazon ECR
+- AWS CloudFormation
 - AWS Step Functions
 - Asana API
 - Microsoft Graph email delivery via the communication provider

@@ -1,0 +1,45 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: ECR repository for dispute-email-agent container images.
+
+Parameters:
+  RepositoryName:
+    Type: String
+    Default: dispute-email-agent
+    Description: Name of the ECR repository used by CI/CD.
+
+Resources:
+  Repository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Ref RepositoryName
+      EncryptionConfiguration:
+        EncryptionType: AES256
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      ImageTagMutability: IMMUTABLE
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Keep the latest 30 application images",
+                "selection": {
+                  "tagStatus": "any",
+                  "countType": "imageCountMoreThan",
+                  "countNumber": 30
+                },
+                "action": {
+                  "type": "expire"
+                }
+              }
+            ]
+          }
+
+Outputs:
+  RepositoryName:
+    Description: ECR repository name.
+    Value: !Ref Repository
+  RepositoryUri:
+    Description: ECR repository URI.
+    Value: !GetAtt Repository.RepositoryUri
